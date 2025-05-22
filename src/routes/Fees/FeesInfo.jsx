@@ -801,6 +801,83 @@ const FeesInfo = () => {
   };
 
   // Fetch tenant data with pagination, search, and filters
+  // const fetchTenants = async () => {
+  //   try {
+  //     setLoading(true);
+
+  //     // Build query parameters for the API request
+  //     const queryParams = new URLSearchParams({
+  //       page: pageNumber.toString(),
+  //       limit: tenantPerPage.toString(),
+  //     });
+
+  //     // Add search term if provided
+  //     if (search.trim()) {
+  //       queryParams.append("search", search.trim());
+  //     }
+
+  //     // Add filters if selected
+  //     if (room !== "Room 201") {
+  //       queryParams.append("room", room.replace("Room ", ""));
+  //     }
+
+  //     if (month && year) {
+  //       queryParams.append("month", month);
+  //       queryParams.append("year", year);
+  //     }
+
+  //     try {
+  //       const response = await fetch(
+  //         `${getTenantUrl}?${queryParams.toString()}`,
+  //         {
+  //           method: "GET",
+  //           credentials: "include",
+  //           headers: {
+  //             "Content-Type": "application/json",
+  //           },
+  //         }
+  //       );
+
+  //       if (response.ok) {
+  //         const data = await response.json();
+  //         console.log(data, "ten");
+
+  //         if (Array.isArray(data.tenants)) {
+  //           setTenants(data.tenants);
+  //           setTotalTenants(
+  //             data.total || data.count || data.tenants.length || 0
+  //           );
+  //           return;
+  //         }
+  //       }
+
+  //       // If API fails or returns no data, use sample data for development
+  //       console.log(
+  //         "Using sample tenant data since API didn't return valid data"
+  //       );
+  //       setTenants(tenants);
+  //       setTotalTenants(tenants.length);
+  //     } catch (apiError) {
+  //       console.error("API Error:", apiError);
+  //       // Fall back to sample data if API request fails
+  //       console.log("Falling back to sample tenant data due to API error");
+  //       setTenants(tenants);
+  //       setTotalTenants(tenants.length);
+  //     }
+  //   } catch (error) {
+  //     console.error("Error in fetchTenants function:", error);
+  //     toast.error(
+  //       "Something went wrong while fetching tenants",
+  //       toastNoficationSettings
+  //     );
+  //     // Still fall back to sample data
+  //     setTenants(tenants);
+  //     setTotalTenants(tenants.length);
+  //   } finally {
+  //     setLoading(false);
+  //   }
+  // };
+
   const fetchTenants = async () => {
     try {
       setLoading(true);
@@ -826,58 +903,72 @@ const FeesInfo = () => {
         queryParams.append("year", year);
       }
 
-      try {
-        const response = await fetch(
-          `${getTenantUrl}?${queryParams.toString()}`,
-          {
-            method: "GET",
-            credentials: "include",
-            headers: {
-              "Content-Type": "application/json",
-            },
-          }
-        );
+      const fullUrl = `${getTenantUrl}?${queryParams.toString()}`;
+      console.log("Fetching from URL:", fullUrl);
 
-        if (response.ok) {
-          const data = await response.json();
-          console.log(data, "ten");
+      // Add timeout and better error handling
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
-          if (Array.isArray(data.tenants)) {
-            setTenants(data.tenants);
-            setTotalTenants(
-              data.total || data.count || data.tenants.length || 0
-            );
-            return;
-          }
-        }
+      const response = await fetch(fullUrl, {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        signal: controller.signal,
+      });
 
-        // If API fails or returns no data, use sample data for development
-        console.log(
-          "Using sample tenant data since API didn't return valid data"
-        );
-        setTenants(sampleTenants);
-        setTotalTenants(sampleTenants.length);
-      } catch (apiError) {
-        console.error("API Error:", apiError);
-        // Fall back to sample data if API request fails
-        console.log("Falling back to sample tenant data due to API error");
-        setTenants(sampleTenants);
-        setTotalTenants(sampleTenants.length);
+      clearTimeout(timeoutId);
+
+      console.log("Response status:", response.status);
+      console.log(
+        "Response headers:",
+        Object.fromEntries(response.headers.entries())
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("API Error Response:", errorText);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log("API Response data:", data);
+
+      if (Array.isArray(data.tenants)) {
+        setTenants(data.tenants);
+        setTotalTenants(data.total || data.count || data.tenants.length || 0);
+        console.log(`Successfully loaded ${data.tenants.length} tenants`);
+      } else {
+        console.warn("API returned unexpected data structure:", data);
+        setTenants([]);
+        setTotalTenants(0);
       }
     } catch (error) {
-      console.error("Error in fetchTenants function:", error);
-      toast.error(
-        "Something went wrong while fetching tenants",
-        toastNoficationSettings
-      );
-      // Still fall back to sample data
-      setTenants(sampleTenants);
-      setTotalTenants(sampleTenants.length);
+      console.error("Error fetching tenants:", error);
+
+      // More specific error messages
+      let errorMessage = "Something went wrong while fetching tenants";
+
+      if (error.name === "AbortError") {
+        errorMessage = "Request timed out. Please try again.";
+      } else if (error.message.includes("Failed to fetch")) {
+        errorMessage =
+          "Unable to connect to server. Please check your internet connection.";
+      } else if (error.message.includes("HTTP")) {
+        errorMessage = `Server error: ${error.message}`;
+      }
+
+      toast.error(errorMessage, toastNoficationSettings);
+
+      // Clear tenants on error
+      setTenants([]);
+      setTotalTenants(0);
     } finally {
       setLoading(false);
     }
   };
-
   // Initial data loading
   useEffect(() => {
     fetchHostel();
@@ -1221,12 +1312,10 @@ const FeesInfo = () => {
     <div className="w-full pt-0 min-h-screen flex justify-center items-start relative">
       <div className="w-full pt-4 max-w-7xl px-4">
         {loading && tenants.length === 0 ? (
-          // Loading spinner
           <div className="flex justify-center items-center h-60">
             <div className="w-12 h-12 border-4 border-dashed rounded-full animate-spin border-blue-500"></div>
           </div>
         ) : !hostel || Object.keys(hostel).length === 0 ? (
-          // No hostel message
           <NoHostelMessage />
         ) : (
           <div>
