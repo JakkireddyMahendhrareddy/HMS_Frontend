@@ -1,0 +1,75 @@
+/* @import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+::-webkit-scrollbar {
+  display: none;
+}
+.custom-toast {
+  background-color: #d1fae5 !important;
+  font-size: 1.2rem;
+  min-height: 70px;
+  color: #047857;
+  border-radius: 10px;
+  display: flex;
+  justify-content: center;
+}
+.custom-toast-logout {
+  background-color: #3b82f6 !important;
+  font-size: 1rem;
+  min-height: 50px;
+  color: #fff;
+  border-radius: 10px;
+  text-align: center;
+  width: fit-content;
+}
+.active {
+  color: rgb(44, 119, 231);
+  font-size: 20px;
+  font-weight: 600;
+} */
+
+@import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+::-webkit-scrollbar {
+  display: none;
+}
+
+/* 🌿 Success Toast */
+.custom-toast {
+  background-color: #d1fae5 !important; /* Light green */
+  font-size: 1.2rem;
+  min-height: 70px;
+  color: #047857; /* Dark green */
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 🔵 Logout/Info Toast */
+.custom-toast-logout {
+  background-color: #3b82f6 !important; /* Blue */
+  font-size: 1rem;
+  min-height: 50px;
+  color: #fff;
+  border-radius: 10px;
+  text-align: center;
+  width: fit-content;
+  padding: 0.5rem 1rem;
+}
+
+/* 🔵 Active Link Style */
+.active {
+  color: rgb(44, 119, 231);
+  font-size: 20px;
+  font-weight: 600;
+}
