@@ -42,7 +42,7 @@ const UserFeedback = () => {
 
   const fetchCustomerFeedback = async () => {
     try {
-      const response = await fetch("http://localhost:5000/api/review/view");
+      const response = await fetch(`${backendUrl}/api/review/view`);
       if (response.ok) {
         const data = await response.json();
         const popularFeedback = data.filter((feedback) => feedback.rating >= 4);

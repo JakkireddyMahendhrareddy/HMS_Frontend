@@ -17,6 +17,7 @@ const HostelInfo = () => {
   const addRoomUrl = `${backendUrl}/api/hostel/room/add`;
   const editRoomUrl = `${backendUrl}/api/hostel/room/edit/`;
   const deleteRoomUrl = `${backendUrl}/api/hostel/room/remove/`;
+  console.log(getHostelUrl,"hhhhhhhhhhhhhhhhhhhhhhhhhhcd")
 
   const [hostel, setHostel] = useState(null);
   const [rooms, setRooms] = useState([]);
