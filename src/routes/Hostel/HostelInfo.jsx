@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 // import { FaBed, FaDollarSign, FaCheckCircle, FaEdit } from "react-icons/fa";
 import HostelAndRoomDetails from "../Hostel/HostelAndRoomdetails";
 import ConfirmModal from "../ConfirmModal";
@@ -7,32 +7,67 @@ import { toast } from "react-toastify";
 import RoomFormModal from "../RoomFormModal";
 import HostelForm from "./HostelForm";
 import NoHostelMessage from "../NoHostelMessage";
+import axios from "axios";
+import Cookies from "js-cookie";
+
+// Create axios instance with default config
+const api = axios.create({
+  baseURL: backendUrl,
+  timeout: 8000, // 8 second timeout
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+// Add request interceptor for authentication
+api.interceptors.request.use((config) => {
+  const token = Cookies.get('jwtToken');
+  if (!token) {
+    // Redirect to login if no token
+    window.location.href = '/login';
+    return Promise.reject('No auth token');
+  }
+  config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+// Add response interceptor for error handling
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      Cookies.remove('jwtToken');
+      window.location.href = '/login';
+      return Promise.reject('Session expired');
+    }
+    return Promise.reject(error);
+  }
+);
+
+// Initialize cache
+const cache = {
+  hostel: { data: null, timestamp: null },
+  rooms: { data: null, timestamp: null },
+  maxAge: 5 * 60 * 1000 // 5 minutes cache
+};
+
 const HostelInfo = () => {
-  const createHostelUrl = `${backendUrl}/api/hostel/add`;
-  const getHostelUrl = `${backendUrl}/api/hostel/view`;
-  const confirmEditUrl = `${backendUrl}/api/hostel/edit`;
-  const confirmDeleteUrl = `${backendUrl}/api/hostel/remove`;
-  const getRoomsUrl = `${backendUrl}/api/hostel/room/get`;
+  // API endpoints
+  const createHostelUrl = '/api/hostel/add';
+  const getHostelUrl = '/api/hostel/view';
+  const confirmEditUrl = '/api/hostel/edit';
+  const confirmDeleteUrl = '/api/hostel/remove';
+  const getRoomsUrl = '/api/hostel/room/get';
+  const addRoomUrl = '/api/hostel/room/add';
+  const editRoomUrl = '/api/hostel/room/edit/';
+  const deleteRoomUrl = '/api/hostel/room/remove/';
 
-  const addRoomUrl = `${backendUrl}/api/hostel/room/add`;
-  const editRoomUrl = `${backendUrl}/api/hostel/room/edit/`;
-  const deleteRoomUrl = `${backendUrl}/api/hostel/room/remove/`;
-  console.log(getHostelUrl,"hhhhhhhhhhhhhhhhhhhhhhhhhhcd")
-
+  // State management
   const [hostel, setHostel] = useState(null);
   const [rooms, setRooms] = useState([]);
   const [showAddHostelFormModal, setShowAddHostelFormModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isEditingHostel, setIsEditingHostel] = useState(false);
-  const [newRoom, setNewRoom] = useState({
-    number: "",
-    type: "",
-    beds: "",
-    availableBeds: "",
-    rent: "",
-    status: "available",
-  });
-  const [editRoomId, setEditRoomId] = useState(null);
   const [error, setError] = useState("");
   const [showRoomFormModal, setShowRoomFormModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -42,72 +77,94 @@ const HostelInfo = () => {
   const [hostelCategory, setHostelCategory] = useState("Men");
   const [totalRooms, setTotalRooms] = useState("");
   const [maxCapacity, setMaxCapacity] = useState("");
+  const [pageNumber, setPageNumber] = useState(1);
+  const roomsPerPage = 10;
 
-  const mapBackendRoomToFrontend = (room) => ({
-    number: room.roomNumber,
-    type: room.sharingType,
-    beds: room.totalBeds,
-    availableBeds: room.availableBeds,
-    rent: room.rent,
+  const [newRoom, setNewRoom] = useState({
+    number: "",
+    type: "",
+    beds: "",
+    availableBeds: "",
+    rent: "",
+    status: "available",
   });
+  const [editRoomId, setEditRoomId] = useState(null);
 
-  const mapFrontendRoomToBackend = (room) => {
-    return {
-      roomNumber: room.number,
-      sharingType: room.type,
-      totalBeds: parseInt(room.beds, 10),
-      availableBeds: parseInt(room.availableBeds, 10),
-      rent: parseInt(room.rent, 10),
-    };
-  };
-
-  const fetchRooms = async () => {
+  // Fetch with cache utility
+  const fetchWithCache = async (key, url, options = {}) => {
     try {
-      const response = await fetch(getRoomsUrl, {
-        method: "GET",
-        credentials: "include",
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (data) {
-          const convertedRooms = data.map(mapBackendRoomToFrontend);
-          setRooms(convertedRooms);
-        } else {
-          setRooms([]);
-        }
+      // Check cache if not forcing refresh
+      if (!options.forceRefresh && 
+          cache[key]?.data && 
+          cache[key]?.timestamp && 
+          (Date.now() - cache[key].timestamp < cache.maxAge)) {
+        return cache[key].data;
       }
+
+      const response = await api.get(url, {
+        ...options,
+        withCredentials: true
+      });
+
+      // Update cache
+      cache[key] = {
+        data: response.data,
+        timestamp: Date.now()
+      };
+
+      return response.data;
     } catch (error) {
-      toast.error("Something Went Wrong", toastNoficationSettings);
+      console.error(`Error fetching ${key}:`, error);
+      throw error;
     }
   };
 
-  const fetchHostel = async () => {
+  // Optimized fetch rooms function
+  const fetchRooms = useCallback(async () => {
     try {
-      setLoading(true);
-      const response = await fetch(getHostelUrl, {
-        method: "GET",
-        credentials: "include",
-      });
-      if (response.ok) {
-        const data = await response.json();
-        console.log(data);
-        if (data) {
-          setHostel(data);
-          fetchRooms();
-        } else {
-          setHostel(null);
-        }
+      const data = await fetchWithCache('rooms', getRoomsUrl);
+      if (data) {
+        const convertedRooms = data.map(mapBackendRoomToFrontend);
+        setRooms(convertedRooms);
+      } else {
+        setRooms([]);
       }
     } catch (error) {
-      toast.warning("Something Went Wrong", toastNoficationSettings);
+      console.error('Error fetching rooms:', error);
+      toast.error("Failed to fetch rooms", toastNoficationSettings);
+    }
+  }, []);
+
+  // Optimized fetch hostel function
+  const fetchHostel = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError("");
+
+      const data = await fetchWithCache('hostel', getHostelUrl, { forceRefresh: true });
+      if (data) {
+        setHostel(data);
+        await fetchRooms();
+      } else {
+        setHostel(null);
+      }
+    } catch (error) {
+      console.error('Error fetching hostel:', error);
+      if (error.response?.status === 401) {
+        toast.error("Please login again", toastNoficationSettings);
+      } else {
+        toast.error("Failed to load hostel data", toastNoficationSettings);
+      }
+      setError("Failed to load hostel data");
     } finally {
       setLoading(false);
     }
-  };
+  }, [fetchRooms]);
 
+  // Initial data loading
   useEffect(() => {
     fetchHostel();
-  }, []);
+  }, [fetchHostel]);
 
   useEffect(() => {
     if (isEditingHostel && hostel) {
@@ -117,34 +174,6 @@ const HostelInfo = () => {
       setMaxCapacity(hostel.maxCapacity || "");
     }
   }, [hostel, isEditingHostel]);
-
-  const [pageNumber, setPageNumber] = useState(1);
-  const roomsPerPage = 10;
-
-  const handleHostelSubmit = async (method, url, hostelData) => {
-    try {
-      setLoading(true);
-      const response = await fetch(url, {
-        method,
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(hostelData),
-      });
-      const data = await response.json();
-      if (response.ok) {
-        setHostel(hostelData);
-        toast.success(data.message);
-      } else {
-        toast.error(data.message);
-      }
-    } catch (error) {
-      toast.warning("Something Went Wrong", toastNoficationSettings);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const getHostelData = () => {
     return {
@@ -213,17 +242,15 @@ const HostelInfo = () => {
     try {
       const url = isEdit ? `${editRoomUrl}${roomID}` : addRoomUrl;
       const method = isEdit ? "PATCH" : "POST";
-      const response = await fetch(url, {
+      const response = await api({
         method,
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(roomInfo),
+        url,
+        data: roomInfo,
+        withCredentials: true
       });
-      const data = await response.json();
-      if (response.ok) {
-        toast.success(data.message);
+
+      if (response.data) {
+        toast.success(response.data.message);
         fetchRooms();
         setNewRoom({
           number: "",
@@ -235,11 +262,10 @@ const HostelInfo = () => {
         });
         setShowRoomFormModal(false);
         setError("");
-      } else {
-        toast.error(data.message);
       }
     } catch (error) {
-      toast.warning("Something Went Wrong", toastNoficationSettings);
+      console.error('Error submitting room:', error);
+      toast.error(error.response?.data?.message || "Failed to update room", toastNoficationSettings);
     }
   };
 
@@ -289,25 +315,24 @@ const HostelInfo = () => {
   const deleteHostelInfo = async () => {
     try {
       setLoading(true);
-      const response = await fetch(confirmDeleteUrl, {
+      const response = await api({
         method: "DELETE",
-        credentials: "include",
+        url: confirmDeleteUrl,
+        withCredentials: true
       });
 
-      const data = await response.json();
-      if (response.ok) {
-        toast.success(data.message);
+      if (response.data) {
+        toast.success(response.data.message);
         setHostel(null);
         setRooms([]);
         setHostelName(null);
         setHostelCategory("Men");
         setTotalRooms(null);
         setMaxCapacity(null);
-      } else {
-        toast.error(data.message);
       }
     } catch (error) {
-      toast.warning("Something went wrong", toastNoficationSettings);
+      console.error('Error deleting hostel:', error);
+      toast.error(error.response?.data?.message || "Failed to delete hostel", toastNoficationSettings);
     } finally {
       setLoading(false);
     }
@@ -321,22 +346,21 @@ const HostelInfo = () => {
 
   const deleteRoomInfo = async (roomNumber) => {
     try {
-      const response = await fetch(`${deleteRoomUrl}${roomNumber}`, {
+      const response = await api({
         method: "DELETE",
-        credentials: "include",
+        url: `${deleteRoomUrl}${roomNumber}`,
+        withCredentials: true
       });
 
-      const data = await response.json();
-      if (response.ok) {
+      if (response.data) {
         fetchRooms();
-        toast.success(data.message);
+        toast.success(response.data.message);
         setRooms(rooms.filter((_, i) => i !== roomNumber));
         setRoomNumberToDelete(null);
-      } else {
-        toast.error(data.message);
       }
     } catch (error) {
-      toast.warning("Something Went Wrong", toastNoficationSettings);
+      console.error('Error deleting room:', error);
+      toast.error(error.response?.data?.message || "Failed to delete room", toastNoficationSettings);
     }
   };
 
@@ -349,6 +373,7 @@ const HostelInfo = () => {
     setShowConfirmModal(false);
     setConfirmType(null);
   };
+
   const editRoom = (roomNumber) => {
     const roomIndex = rooms.findIndex((room) => room.number === roomNumber);
     if (roomIndex === -1) {
@@ -359,153 +384,124 @@ const HostelInfo = () => {
     setEditRoomId(roomIndex);
     setShowRoomFormModal(true);
   };
+
   const totalPages = Math.ceil(rooms.length / roomsPerPage);
   const displayedRooms = rooms.slice(
     (pageNumber - 1) * roomsPerPage,
     pageNumber * roomsPerPage
   );
+
+  // Room mapping utilities
+  const mapBackendRoomToFrontend = (room) => ({
+    number: room.roomNumber,
+    type: room.sharingType,
+    beds: room.totalBeds,
+    availableBeds: room.availableBeds,
+    rent: room.rent,
+  });
+
+  const mapFrontendRoomToBackend = (room) => ({
+    roomNumber: room.number,
+    sharingType: room.type,
+    totalBeds: parseInt(room.beds, 10),
+    availableBeds: parseInt(room.availableBeds, 10),
+    rent: parseInt(room.rent, 10),
+  });
+
+  // Optimized hostel submit function
+  const handleHostelSubmit = async (method, url, hostelData) => {
+    try {
+      setLoading(true);
+      const response = await api({
+        method,
+        url,
+        data: hostelData,
+        withCredentials: true
+      });
+
+      if (response.data) {
+        setHostel(hostelData);
+        toast.success(response.data.message);
+        // Force refresh hostel data
+        await fetchHostel();
+      }
+    } catch (error) {
+      console.error('Error submitting hostel:', error);
+      toast.error(error.response?.data?.message || "Failed to update hostel", toastNoficationSettings);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    // <div>
-    //   <div className="w-full pt-0 min-h-screen flex justify-center items-start relative">
-    //     <div className="w-full pt-4 max-w-7xl">
-    //       {loading ? (
-    //         <div className="flex justify-center items-center h-60">
-    //           <div className="w-12 h-12 border-4 border-dashed rounded-full animate-spin border-blue-500"></div>
-    //         </div>
-    //       ) : !hostel || Object.keys(hostel).length === 0 ? (
-    //         <NoHostelMessage
-    //           setShowAddHostelFormModal={setShowAddHostelFormModal}
-    //         />
-    //       ) : (
-    //         <div>
-    //           <HostelAndRoomDetails
-    //             setIsEditingHostel={setIsEditingHostel}
-    //             hostel={hostel}
-    //             handleDeleteHostelClick={handleDeleteHostelClick}
-    //             setShowRoomFormModal={setShowRoomFormModal}
-    //             setEditRoomId={setEditRoomId}
-    //             setNewRoom={setNewRoom}
-    //             displayedRooms={displayedRooms}
-    //             editRoom={editRoom}
-    //             handleDeleteRoomClick={handleDeleteRoomClick}
-    //             setPageNumber={setPageNumber}
-    //             rooms={rooms}
-    //             pageNumber={pageNumber}
-    //             totalPages={totalPages}
-    //           />
-    //         </div>
-    //       )}
-
-    //       {showRoomFormModal && (
-    //         <RoomFormModal
-    //           setShowRoomFormModal={setShowRoomFormModal}
-    //           setError={setError}
-    //           editRoomId={editRoomId}
-    //           newRoom={newRoom}
-    //           handleRoomChange={handleRoomChange}
-    //           handleAvailableBedsChange={handleAvailableBedsChange}
-    //           error={error}
-    //           addRoom={addRoom}
-    //         />
-    //       )}
-
-    //       {(isEditingHostel || showAddHostelFormModal) && (
-    //         <HostelForm
-    //           setHostelName={setHostelName}
-    //           setHostelCategory={setHostelCategory}
-    //           setTotalRooms={setTotalRooms}
-    //           setMaxCapacity={setMaxCapacity}
-    //           addNewHostel={addNewHostel}
-    //           updateHostelDetails={updateHostelDetails}
-    //           hostelName={hostelName}
-    //           hostelCategory={hostelCategory}
-    //           totalRooms={totalRooms}
-    //           maxCapacity={maxCapacity}
-    //           setShowAddHostelFormModal={setShowAddHostelFormModal}
-    //           setIsEditingHostel={setIsEditingHostel}
-    //           isEditingHostel={isEditingHostel}
-    //         />
-    //       )}
-
-    //       {showConfirmModal && (
-    //         <ConfirmModal
-    //           confirmType={confirmType}
-    //           confirmDelete={confirmDelete}
-    //           setShowConfirmModal={setShowConfirmModal}
-    //         />
-    //       )}
-    //     </div>
-    //   </div>
-    // </div>
     <div className="min-h-screen w-full bg-gray-50 px-4 sm:px-6 lg:px-8">
-  <div className="max-w-7xl mx-auto py-6 sm:py-8 lg:py-10">
-    {loading ? (
-      <div className="flex justify-center items-center h-60">
-        <div className="w-12 h-12 border-4 border-dashed rounded-full animate-spin border-blue-500"></div>
+      <div className="max-w-7xl mx-auto py-6 sm:py-8 lg:py-10">
+        {loading ? (
+          <div className="flex justify-center items-center h-60">
+            <div className="w-12 h-12 border-4 border-dashed rounded-full animate-spin border-blue-500"></div>
+          </div>
+        ) : !hostel || Object.keys(hostel).length === 0 ? (
+          <NoHostelMessage setShowAddHostelFormModal={setShowAddHostelFormModal} />
+        ) : (
+          <div className="space-y-6">
+            <HostelAndRoomDetails
+              setIsEditingHostel={setIsEditingHostel}
+              hostel={hostel}
+              handleDeleteHostelClick={handleDeleteHostelClick}
+              setShowRoomFormModal={setShowRoomFormModal}
+              setEditRoomId={setEditRoomId}
+              setNewRoom={setNewRoom}
+              displayedRooms={displayedRooms}
+              editRoom={editRoom}
+              handleDeleteRoomClick={handleDeleteRoomClick}
+              setPageNumber={setPageNumber}
+              rooms={rooms}
+              pageNumber={pageNumber}
+              totalPages={totalPages}
+            />
+          </div>
+        )}
+
+        {showRoomFormModal && (
+          <RoomFormModal
+            setShowRoomFormModal={setShowRoomFormModal}
+            setError={setError}
+            editRoomId={editRoomId}
+            newRoom={newRoom}
+            handleRoomChange={handleRoomChange}
+            handleAvailableBedsChange={handleAvailableBedsChange}
+            error={error}
+            addRoom={addRoom}
+          />
+        )}
+
+        {(isEditingHostel || showAddHostelFormModal) && (
+          <HostelForm
+            setHostelName={setHostelName}
+            setHostelCategory={setHostelCategory}
+            setTotalRooms={setTotalRooms}
+            setMaxCapacity={setMaxCapacity}
+            addNewHostel={addNewHostel}
+            updateHostelDetails={updateHostelDetails}
+            hostelName={hostelName}
+            hostelCategory={hostelCategory}
+            totalRooms={totalRooms}
+            maxCapacity={maxCapacity}
+            setShowAddHostelFormModal={setShowAddHostelFormModal}
+            setIsEditingHostel={setIsEditingHostel}
+            isEditingHostel={isEditingHostel}
+          />
+        )}
+
+        {showConfirmModal && (
+          <ConfirmModal
+            confirmType={confirmType}
+            confirmDelete={confirmDelete}
+            setShowConfirmModal={setShowConfirmModal}
+          />
+        )}
       </div>
-    ) : !hostel || Object.keys(hostel).length === 0 ? (
-      <NoHostelMessage setShowAddHostelFormModal={setShowAddHostelFormModal} />
-    ) : (
-      <div className="space-y-6">
-        <HostelAndRoomDetails
-          setIsEditingHostel={setIsEditingHostel}
-          hostel={hostel}
-          handleDeleteHostelClick={handleDeleteHostelClick}
-          setShowRoomFormModal={setShowRoomFormModal}
-          setEditRoomId={setEditRoomId}
-          setNewRoom={setNewRoom}
-          displayedRooms={displayedRooms}
-          editRoom={editRoom}
-          handleDeleteRoomClick={handleDeleteRoomClick}
-          setPageNumber={setPageNumber}
-          rooms={rooms}
-          pageNumber={pageNumber}
-          totalPages={totalPages}
-        />
-      </div>
-    )}
-
-    {showRoomFormModal && (
-      <RoomFormModal
-        setShowRoomFormModal={setShowRoomFormModal}
-        setError={setError}
-        editRoomId={editRoomId}
-        newRoom={newRoom}
-        handleRoomChange={handleRoomChange}
-        handleAvailableBedsChange={handleAvailableBedsChange}
-        error={error}
-        addRoom={addRoom}
-      />
-    )}
-
-    {(isEditingHostel || showAddHostelFormModal) && (
-      <HostelForm
-        setHostelName={setHostelName}
-        setHostelCategory={setHostelCategory}
-        setTotalRooms={setTotalRooms}
-        setMaxCapacity={setMaxCapacity}
-        addNewHostel={addNewHostel}
-        updateHostelDetails={updateHostelDetails}
-        hostelName={hostelName}
-        hostelCategory={hostelCategory}
-        totalRooms={totalRooms}
-        maxCapacity={maxCapacity}
-        setShowAddHostelFormModal={setShowAddHostelFormModal}
-        setIsEditingHostel={setIsEditingHostel}
-        isEditingHostel={isEditingHostel}
-      />
-    )}
-
-    {showConfirmModal && (
-      <ConfirmModal
-        confirmType={confirmType}
-        confirmDelete={confirmDelete}
-        setShowConfirmModal={setShowConfirmModal}
-      />
-    )}
-  </div>
-</div>
-
+    </div>
   );
 };
 

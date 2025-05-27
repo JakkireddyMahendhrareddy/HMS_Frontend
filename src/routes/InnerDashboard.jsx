@@ -3,41 +3,139 @@ import { useState, useEffect } from "react";
 import NoHostelMessage from "./NoHostelMessage";
 import { toast } from "react-toastify";
 import { backendUrl, toastNoficationSettings } from "../utils/utils";
+import axios from "axios";
+import Cookies from "js-cookie";
 
 const InnerDashboard = () => {
   const headingColor = "text-blue-600";
 
+  // API endpoints
   const getHostelUrl = `${backendUrl}/api/hostel/view`;
+  const getStatsUrl = `${backendUrl}/api/hostel/stats`;
+  const getMessMenuUrl = `${backendUrl}/api/mess/today`;
 
+  // State management
   const [loading, setLoading] = useState(true);
   const [hostel, setHostel] = useState(null);
+  const [stats, setStats] = useState({
+    rooms: { total: 0, occupied: 0, vacant: 0 },
+    payments: { paid: 0, unpaid: 0 },
+    tenants: { total: 0, current: 0 },
+    tickets: { total: 0, unresolved: 0 },
+    visitors: []
+  });
+  const [messMenu, setMessMenu] = useState({
+    breakfast: [],
+    lunch: [],
+    dinner: []
+  });
 
-   const fetchHostel = async () => {
-      try {
-        setLoading(true);
-        const response = await fetch(getHostelUrl, {
-          method: "GET",
-          credentials: "include",
-        });
-        console.log(response,"response")
-        if (response.ok) {
-          const data = await response.json();
-          if (data) {
-            setHostel(data);
-            fetchMessMenu();
-          } else {
-            setHostel(null);
-          }
-        }
-      } catch (error) {
-        // toast.warning("Something Went Wrong", toastNoficationSettings);
-      } finally {
-        setLoading(false);
+  const fetchHostelData = async () => {
+    try {
+      const token = Cookies.get('jwtToken');
+      if (!token) {
+        window.location.href = '/login';
+        return;
       }
-    };
+
+      console.log('Fetching hostel data...');
+      const response = await axios.get(getHostelUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        withCredentials: true
+      });
+
+      console.log('Hostel data received:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching hostel data:', error);
+      if (error.response?.status === 401) {
+        Cookies.remove('jwtToken');
+        window.location.href = '/login';
+      }
+      throw error;
+    }
+  };
+
+  const fetchStats = async () => {
+    try {
+      const token = Cookies.get('jwtToken');
+      if (!token) return;
+
+      console.log('Fetching stats...');
+      const response = await axios.get(getStatsUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        withCredentials: true
+      });
+
+      console.log('Stats received:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching stats:', error);
+      return null;
+    }
+  };
+
+  const fetchMessMenu = async () => {
+    try {
+      const token = Cookies.get('jwtToken');
+      if (!token) return;
+
+      console.log('Fetching mess menu...');
+      const response = await axios.get(getMessMenuUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        withCredentials: true
+      });
+
+      console.log('Mess menu received:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching mess menu:', error);
+      return null;
+    }
+  };
+
+  const fetchDashboardData = async () => {
+    try {
+      setLoading(true);
+      
+      // Fetch hostel data first
+      const hostelData = await fetchHostelData();
+      if (hostelData) {
+        setHostel(hostelData);
+        
+        // If hostel data is successful, fetch other data
+        const [statsData, menuData] = await Promise.all([
+          fetchStats(),
+          fetchMessMenu()
+        ]);
+
+        if (statsData) {
+          setStats(statsData);
+        }
+
+        if (menuData) {
+          setMessMenu(menuData);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error);
+      toast.error("Failed to load dashboard data", toastNoficationSettings);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    fetchHostel();
+    fetchDashboardData();
   }, []);
 
   return (
@@ -48,7 +146,7 @@ const InnerDashboard = () => {
             <div className="flex justify-center items-center h-60">
               <div className="w-12 h-12 border-4 border-dashed rounded-full animate-spin border-blue-500"></div>
             </div>
-          ) : !hostel || Object.keys(hostel).length === 0 ? (
+          ) : !hostel ? (
             <NoHostelMessage />
           ) : (
             <div>
@@ -62,9 +160,9 @@ const InnerDashboard = () => {
                         Rooms
                       </h3>
                       <div className="flex justify-between flex-wrap gap-4">
-                        <Stat label="Total" value="200" />
-                        <Stat label="Occupied" value="150" />
-                        <Stat label="Vacant" value="50" />
+                        <Stat label="Total" value={stats.rooms.total.toString()} />
+                        <Stat label="Occupied" value={stats.rooms.occupied.toString()} />
+                        <Stat label="Vacant" value={stats.rooms.vacant.toString()} />
                       </div>
                     </div>
 
@@ -74,8 +172,8 @@ const InnerDashboard = () => {
                         Payment
                       </h3>
                       <div className="flex justify-between flex-wrap gap-4">
-                        <Stat label="Paid" value="₹ 1,20,345" />
-                        <Stat label="Unpaid" value="₹ 20,345" />
+                        <Stat label="Paid" value={`₹ ${stats.payments.paid.toLocaleString()}`} />
+                        <Stat label="Unpaid" value={`₹ ${stats.payments.unpaid.toLocaleString()}`} />
                       </div>
                     </div>
 

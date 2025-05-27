@@ -1,5 +1,5 @@
 import axios from "axios";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { FaUserPlus, FaSearch } from "react-icons/fa";
 import { RiFilterLine } from "react-icons/ri";
 import { toast } from "react-toastify";
@@ -11,6 +11,33 @@ import PaginatedTenantTable from "./PaginatedTenantTable";
 // import FilterComponent from "./FilterComponent";
 import NoHostelMessage from "../NoHostelMessage";
 import { backendUrl, toastNoficationSettings } from "../../utils/utils";
+import Cookies from "js-cookie";
+
+// Create axios instance with default config
+const api = axios.create({
+  baseURL: backendUrl,
+  timeout: 8000, // 8 second timeout
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+// Add request interceptor for authentication
+api.interceptors.request.use((config) => {
+  const token = Cookies.get('jwtToken');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Initialize cache
+const cache = {
+  hostel: { data: null, timestamp: null },
+  rooms: { data: null, timestamp: null },
+  tenants: { data: null, timestamp: null },
+  maxAge: 5 * 60 * 1000 // 5 minutes cache
+};
 
 const TenantInfo = () => {
   // API URLs
@@ -98,51 +125,81 @@ const TenantInfo = () => {
     ownerId: "",
   });
 
-  // Fetch tenants based on search term, filters, and pagination
-  const fetchTenants = async () => {
+  // Add new state for request cancellation
+  const cancelTokenRef = useRef(null);
+
+  // Optimized fetch function with caching and request cancellation
+  const fetchWithCache = async (key, url, options = {}) => {
+    try {
+      // Check cache first
+      if (cache[key]?.data && 
+          cache[key]?.timestamp && 
+          (Date.now() - cache[key].timestamp < cache.maxAge) &&
+          !options.forceRefresh) {
+        return cache[key].data;
+      }
+
+      // Cancel previous request if exists
+      if (cancelTokenRef.current) {
+        cancelTokenRef.current.cancel('Operation canceled due to new request.');
+      }
+
+      // Create new cancel token
+      cancelTokenRef.current = axios.CancelToken.source();
+
+      const response = await api.get(url, {
+        ...options,
+        cancelToken: cancelTokenRef.current.token,
+        withCredentials: true
+      });
+
+      // Update cache
+      cache[key] = {
+        data: response.data,
+        timestamp: Date.now()
+      };
+
+      return response.data;
+    } catch (error) {
+      if (axios.isCancel(error)) {
+        console.log('Request canceled:', error.message);
+      } else {
+        throw error;
+      }
+    }
+  };
+
+  // Optimized fetch tenants function
+  const fetchTenants = useCallback(async () => {
     try {
       setLoading(true);
       setIsError(false);
       setIsSearching(true);
 
-      // Create params object for query parameters
       const params = {
         page: pageNumber,
         limit: tenantPerPage,
+        sortBy: sortConfig.field,
+        sortOrder: sortConfig.direction,
+        ...(searchTerm && { search: searchTerm.trim() }),
+        ...(filters.roomNumber && { roomNumber: filters.roomNumber }),
+        ...(filters.joinDateFrom && { joinDateFrom: filters.joinDateFrom }),
+        ...(filters.joinDateTo && { joinDateTo: filters.joinDateTo }),
+        ...(filters.rentAmountMin && { rentAmountMin: filters.rentAmountMin }),
+        ...(filters.rentAmountMax && { rentAmountMax: filters.rentAmountMax })
       };
 
-      // Only add search term if it's not empty
-      if (searchTerm && searchTerm.trim() !== "") {
-        params.search = searchTerm.trim();
-      }
-
-      // Add filters if they exist and have values
-      if (filters.roomNumber) params.roomNumber = filters.roomNumber;
-      if (filters.joinDateFrom) params.joinDateFrom = filters.joinDateFrom;
-      if (filters.joinDateTo) params.joinDateTo = filters.joinDateTo;
-      if (filters.rentAmountMin) params.rentAmountMin = filters.rentAmountMin;
-      if (filters.rentAmountMax) params.rentAmountMax = filters.rentAmountMax;
-
-      console.log("Fetching tenants with params:", params);
-
-      const response = await axios.get(getTenantUrl, {
+      const data = await fetchWithCache('tenants', getTenantUrl, { 
         params,
-        withCredentials: true,
+        forceRefresh: true // Always get fresh data for tenant list
       });
 
-      if (response.data) {
-        // If API returns pagination data like {tenants: [...], total: 100}
-        if (response.data.tenants && response.data.total !== undefined) {
-          setTenants(response.data.tenants);
-          setTotalTenants(response.data.total);
-        } else {
-          // If API just returns the array of tenants
-          setTenants(response.data);
-          setTotalTenants(response.data.length);
-        }
+      if (data?.tenants && data?.total !== undefined) {
+        setTenants(data.tenants);
+        setTotalTenants(data.total);
       } else {
-        setTenants([]);
-        setTotalTenants(0);
+        setTenants(data || []);
+        setTotalTenants((data || []).length);
       }
     } catch (error) {
       console.error("Error fetching tenants:", error);
@@ -154,7 +211,81 @@ const TenantInfo = () => {
       setLoading(false);
       setIsSearching(false);
     }
-  };
+  }, [pageNumber, tenantPerPage, searchTerm, filters, sortConfig]);
+
+  // Optimized fetch hostel function
+  const fetchHostel = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await fetchWithCache('hostel', getHostelUrl);
+      
+      if (data) {
+        setHostel(data);
+        await fetchRooms();
+        await fetchTenants();
+      } else {
+        setHostel(null);
+      }
+    } catch (error) {
+      toast.warning("Something Went Wrong", toastNoficationSettings);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Optimized fetch rooms function
+  const fetchRooms = useCallback(async () => {
+    try {
+      const data = await fetchWithCache('rooms', getRoomsUrl);
+      
+      if (data) {
+        if (isEditing && selectedTenant) {
+          const availableRooms = data.filter(
+            room => room.availableBeds > 0 || room.roomNumber === selectedTenant.roomNumber
+          );
+          setRooms(availableRooms);
+        } else {
+          const availableRooms = data.filter(room => room.availableBeds > 0);
+          setRooms(availableRooms);
+        }
+      } else {
+        setRooms([]);
+      }
+    } catch (error) {
+      toast.error("Failed to fetch rooms", toastNoficationSettings);
+    }
+  }, [isEditing, selectedTenant]);
+
+  // Debounced search function
+  const debouncedSearch = useCallback(
+    debounce(() => {
+      setPageNumber(1);
+      fetchTenants();
+    }, 300),
+    []
+  );
+
+  // Update search handler to use debounce
+  const handleSearch = useCallback(() => {
+    debouncedSearch();
+  }, [debouncedSearch]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Cancel any pending requests
+      if (cancelTokenRef.current) {
+        cancelTokenRef.current.cancel('Component unmounted');
+      }
+      // Clear cache on unmount
+      Object.keys(cache).forEach(key => {
+        if (typeof cache[key] === 'object') {
+          cache[key].data = null;
+          cache[key].timestamp = null;
+        }
+      });
+    };
+  }, []);
 
   // Handle form input changes
   const handleTenantChange = (e) => {
@@ -347,102 +478,7 @@ const TenantInfo = () => {
     }
   };
 
-  // Fetching hostel details
-  const fetchHostel = async () => {
-    try {
-      setLoading(true);
-      const response = await fetch(getHostelUrl, {
-        method: "GET",
-        credentials: "include",
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (data) {
-          setHostel(data);
-          await fetchRooms();
-          await fetchTenants(); // Fetch tenants after hostel data is loaded
-        } else {
-          setHostel(null);
-        }
-      }
-    } catch (error) {
-      toast.warning("Something Went Wrong", toastNoficationSettings);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Initial data loading
-  useEffect(() => {
-    fetchHostel();
-  }, []);
-
-  // Fetch available rooms for adding tenants
-  const fetchRooms = async () => {
-    try {
-      const response = await axios.get(getRoomsUrl, {
-        withCredentials: true,
-      });
-
-      if (response.status === 200) {
-        const data = response.data;
-        if (data) {
-          // If editing a tenant, include their current room in available rooms
-          if (isEditing && selectedTenant) {
-            // Filter out rooms except the one that belongs to this tenant
-            const availableRooms = data.filter(
-              (room) =>
-                room.availableBeds > 0 ||
-                room.roomNumber === selectedTenant.roomNumber
-            );
-            setRooms(availableRooms);
-          } else {
-            const availableRooms = data.filter(
-              (room) => room.availableBeds > 0
-            );
-            setRooms(availableRooms);
-          }
-        } else {
-          setRooms([]);
-        }
-      }
-    } catch (error) {
-      toast.error("Failed to fetch rooms", toastNoficationSettings);
-    }
-  };
-
-  const handleFilterChange = (updatedFilters) => {
-    setFilters(updatedFilters);
-    setPageNumber(1); // Reset to first page when filters change
-    // Add a small delay to ensure state is updated
-    setTimeout(() => {
-      fetchTenants(); // Fetch with new filters
-    }, 10);
-  };
-
-  // Reset filters
-  const handleResetFilters = () => {
-    // Reset all filters first
-    setFilters({
-      roomNumber: "",
-      joinDateFrom: "",
-      joinDateTo: "",
-      rentAmountMin: "",
-      rentAmountMax: "",
-    });
-
-    // Reset search term too
-    setSearchTerm("");
-
-    // Reset pagination
-    setPageNumber(1);
-
-    // Set a small delay to ensure state is updated before fetching
-    setTimeout(() => {
-      fetchTenants(); // Fetch without filters
-    }, 10);
-  };
-
+  // Handle edit button click
   const handleEditClick = (tenant) => {
     setSelectedTenant(tenant);
 
@@ -642,64 +678,6 @@ const TenantInfo = () => {
         firstErrorField.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }
-  };
-
-  // New function for searching, filtering and sorting tenants
-  const searchTenants = async () => {
-    try {
-      setLoading(true);
-      setIsError(false);
-      setIsSearching(true);
-
-      // Create params object for query parameters
-      const params = {
-        page: pageNumber,
-        limit: tenantPerPage,
-        sortBy: sortConfig.field,
-        sortOrder: sortConfig.direction,
-      };
-
-      // Only add search term if it's not empty
-      if (searchTerm && searchTerm.trim() !== "") {
-        params.search = searchTerm.trim();
-      }
-
-      // Add filters if they exist and have values
-      if (filters.roomNumber) params.roomNumber = filters.roomNumber;
-      if (filters.joinDateFrom) params.joinDateFrom = filters.joinDateFrom;
-      if (filters.joinDateTo) params.joinDateTo = filters.joinDateTo;
-      if (filters.rentAmountMin) params.rentAmountMin = filters.rentAmountMin;
-      if (filters.rentAmountMax) params.rentAmountMax = filters.rentAmountMax;
-
-      console.log("Searching tenants with params:", params);
-
-      const response = await axios.get(searchTenantUrl, {
-        params,
-        withCredentials: true,
-      });
-      if (response.data) {
-        // API returns pagination data structure
-        setTenants(response.data.tenants || []);
-        setTotalTenants(response.data.totalItems || 0);
-      } else {
-        setTenants([]);
-        setTotalTenants(0);
-      }
-    } catch (error) {
-      console.error("Error searching tenants:", error);
-      setIsError(true);
-      toast.error("Failed to search tenants");
-      setTenants([]);
-      setTotalTenants(0);
-    } finally {
-      setLoading(false);
-      setIsSearching(false);
-    }
-  };
-
-  const handleSearch = () => {
-    setPageNumber(1); // Reset to first page when searching
-    fetchTenants();
   };
 
   // Handle sorting

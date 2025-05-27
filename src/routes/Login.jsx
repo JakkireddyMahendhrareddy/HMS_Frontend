@@ -9,48 +9,84 @@ import {
 import { toast } from "react-toastify";
 import Cookies from "js-cookie";
 import validator from "validator";
+import axios from "axios";
 
 const Login = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
 
-  const onHandleFormSubmit = (e) => {
+  // Create axios instance with default config
+  const api = axios.create({
+    baseURL: backendUrl,
+    timeout: 5000, // 5 second timeout
+    headers: {
+      'Content-Type': 'application/json'
+    }
+  });
+
+  const onHandleFormSubmit = async (e) => {
     e.preventDefault();
     if (!validator.isEmail(email)) {
       setErrorMessage("Invalid Email");
       return;
     }
     const userCredentials = { email, password };
-    loginUser(userCredentials);
-    setErrorMessage("");
-    setEmail("");
-    setPassword("");
+    await loginUser(userCredentials);
   };
 
   const loginUser = async (userCredentials) => {
-    try {
-      const apiUrl = `${backendUrl}/api/auth/login`;
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(userCredentials),
-      });
-      if (response.ok) {
-        const { message, jwtToken } = await response.json();
-        console.log(jwtToken);
-        Cookies.set("jwtToken", jwtToken, { expires: 0.25 }); // 6 hours
+    let retryCount = 0;
+    const maxRetries = 2;
+
+    const attemptLogin = async () => {
+      try {
+        setIsLoading(true);
+        setErrorMessage("");
+
+        const response = await api.post('/api/auth/login', userCredentials);
+        const { message, jwtToken } = response.data;
+
+        // Set cookie with proper expiration
+        Cookies.set("jwtToken", jwtToken, { 
+          expires: 0.25, // 6 hours
+          secure: true,
+          sameSite: 'strict'
+        });
+
         toast.success(message, loginSuccessToastNotificationSettings);
+        setEmail("");
+        setPassword("");
         navigate("/dashboard");
-      } else {
-        const { message } = await response.json();
-        toast.error(message, toastNoficationSettings);
+
+      } catch (error) {
+        if (error.response) {
+          // Server responded with error
+          const { message } = error.response.data;
+          toast.error(message, toastNoficationSettings);
+          setErrorMessage(message);
+        } else if (error.request) {
+          // Request made but no response
+          if (retryCount < maxRetries) {
+            retryCount++;
+            await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+            return attemptLogin();
+          }
+          toast.error("Server not responding. Please try again.", toastNoficationSettings);
+          setErrorMessage("Connection failed. Please check your internet.");
+        } else {
+          toast.error("Something went wrong", toastNoficationSettings);
+          setErrorMessage("An unexpected error occurred");
+        }
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      toast.warning("Something went wrong", toastNoficationSettings);
-    }
+    };
+
+    await attemptLogin();
   };
 
   const token = Cookies.get("jwtToken");
@@ -76,6 +112,7 @@ const Login = () => {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="Enter your Email"
               className="w-full border-b-2 border-gray-300 focus:border-blue-500 outline-none py-2 px-2 transition-all duration-200"
+              disabled={isLoading}
             />
           </div>
 
@@ -92,11 +129,13 @@ const Login = () => {
                 type={showPassword ? "text" : "password"}
                 placeholder="Enter your Password"
                 className="w-full border-b-2 border-gray-300 focus:border-blue-500 outline-none py-2 px-2 pr-10 transition-all duration-200"
+                disabled={isLoading}
               />
               <button
                 type="button"
                 className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
                 onClick={() => setShowPassword(!showPassword)}
+                disabled={isLoading}
               >
                 {!showPassword ? (
                   <IoEyeOffOutline size={20} />
@@ -115,9 +154,19 @@ const Login = () => {
 
           <button
             type="submit"
-            className="w-full bg-blue-500 text-white py-2 rounded-md hover:bg-blue-600 transition-all duration-200 cursor-pointer"
+            className={`w-full bg-blue-500 text-white py-2 rounded-md hover:bg-blue-600 transition-all duration-200 ${
+              isLoading ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'
+            }`}
+            disabled={isLoading}
           >
-            Login
+            {isLoading ? (
+              <div className="flex items-center justify-center">
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
+                Logging in...
+              </div>
+            ) : (
+              'Login'
+            )}
           </button>
 
           <div className="text-sm text-center text-gray-600 space-x-2">

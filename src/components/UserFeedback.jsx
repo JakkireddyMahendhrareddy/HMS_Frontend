@@ -2,11 +2,32 @@ import Slider from "react-slick";
 import "slick-carousel/slick/slick.css";
 import "slick-carousel/slick/slick-theme.css";
 import UserFeedbackCard from "./UserFeedbackCard";
-import { useEffect } from "react";
-import { useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import axios from "axios";
+import { backendUrl, toastNoficationSettings } from "../utils/utils";
+import { toast } from "react-toastify";
+
+// Create axios instance with default config
+const api = axios.create({
+  baseURL: backendUrl,
+  timeout: 5000, // 5 second timeout
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+// Initialize feedback cache
+const feedbackCache = {
+  data: null,
+  timestamp: null,
+  maxAge: 15 * 60 * 1000 // 15 minutes cache
+};
 
 const UserFeedback = () => {
   const [customerFeedback, setCustomerFeedback] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+
   const customerFeedbackSliderSettings = {
     dots: false,
     infinite: true,
@@ -40,24 +61,87 @@ const UserFeedback = () => {
     ],
   };
 
-  const fetchCustomerFeedback = async () => {
+  const fetchCustomerFeedback = useCallback(async (forceRefresh = false) => {
     try {
-      const response = await fetch(`${backendUrl}/api/review/view`);
-      if (response.ok) {
-        const data = await response.json();
-        const popularFeedback = data.filter((feedback) => feedback.rating >= 4);
-        setCustomerFeedback(popularFeedback);
-      } else {
-        return <h1 className="text-center font-semibold tetx-gray-600">No Reviews to show</h1>;
+      // Check cache if not forcing refresh
+      if (!forceRefresh && 
+          feedbackCache.data && 
+          feedbackCache.timestamp && 
+          (Date.now() - feedbackCache.timestamp < feedbackCache.maxAge)) {
+        setCustomerFeedback(feedbackCache.data);
+        setIsLoading(false);
+        return;
       }
+
+      setIsLoading(true);
+      setError(null);
+
+      const response = await api.get('/api/review/view', {
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
+      });
+
+      const popularFeedback = response.data
+        .filter(feedback => feedback.rating >= 4)
+        .sort((a, b) => b.rating - a.rating); // Sort by rating descending
+
+      // Update cache
+      feedbackCache.data = popularFeedback;
+      feedbackCache.timestamp = Date.now();
+
+      setCustomerFeedback(popularFeedback);
     } catch (error) {
-      console.log(error);
+      console.error('Feedback fetch error:', error);
+      setError('Failed to load testimonials');
+      
+      if (error.response) {
+        toast.error(error.response.data.message || "Failed to load testimonials", toastNoficationSettings);
+      } else if (error.request) {
+        toast.error("Network error. Please check your connection.", toastNoficationSettings);
+      } else {
+        toast.error("An unexpected error occurred", toastNoficationSettings);
+      }
+    } finally {
+      setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchCustomerFeedback();
-  }, []);
+
+    // Cleanup function
+    return () => {
+      // Clear loading and error states on unmount
+      setIsLoading(false);
+      setError(null);
+    };
+  }, [fetchCustomerFeedback]);
+
+  if (isLoading) {
+    return (
+      <section className="px-6 md:px-20 xl:px-32 w-full mb-16 min-h-[60vh] max-w-screen-xl mx-auto flex items-center justify-center">
+        <div className="w-12 h-12 border-4 border-dashed rounded-full animate-spin border-blue-500"></div>
+      </section>
+    );
+  }
+
+  if (error) {
+    return (
+      <section className="px-6 md:px-20 xl:px-32 w-full mb-16 min-h-[60vh] max-w-screen-xl mx-auto flex items-center justify-center">
+        <h1 className="text-center font-semibold text-gray-600">{error}</h1>
+      </section>
+    );
+  }
+
+  if (!customerFeedback.length) {
+    return (
+      <section className="px-6 md:px-20 xl:px-32 w-full mb-16 min-h-[60vh] max-w-screen-xl mx-auto flex items-center justify-center">
+        <h1 className="text-center font-semibold text-gray-600">No reviews to show</h1>
+      </section>
+    );
+  }
 
   return (
     <section className="px-6 md:px-20 xl:px-32 w-full mb-16 min-h-[60vh] max-w-screen-xl mx-auto">
@@ -75,7 +159,6 @@ const UserFeedback = () => {
         </Slider>
       </div>
     </section>
-
   );
 };
 
